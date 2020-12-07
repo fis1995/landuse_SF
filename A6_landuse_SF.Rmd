@@ -184,13 +184,13 @@ sf_burden_hhchild_pumas <-
 
 ```
 
-```{r cost-burdened statistic}
-# cost-burdened stat. - child hh 
+```{r cost-burdened statistic, echo=T, warning=F,message=F}
+# cost-burdened stat 
 sum(sf_burden_hhchild_pumas$burdened_30)/sum(sf_burden_hhchild_pumas$households)
 
 ```
 
-```{r, housing cost stat}
+```{r, housing cost stat, echo=T, warning=F, message=F}
 # housing cost stat. - child hh
 sum(sf_burden_hhchild_pumas$burden_30)
 
