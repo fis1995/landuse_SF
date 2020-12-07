@@ -1,0 +1,642 @@
+---
+title: "Land Use in San Francisco"
+author: "Francine Stephens"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=F, message=F, warning=F}
+knitr::opts_chunk$set(echo = F)
+
+setwd("~/Stanford/landuse_SF")
+
+# Load Libraries
+packages <- c(
+              "readxl",
+              "tidyverse",
+              "sf",
+              "ggplot2",
+              "plotly",
+              "tigris",
+              "leaflet",
+              "RColorBrewer", 
+              "censusapi", 
+              "tidycensus",
+              "mapboxapi",
+              "stargazer"
+              )
+lapply(packages, library, character.only = T)
+
+```
+
+## Analysis of Housing Burden for Households with Children
+
+
+Housing cost-burden, where a household spends more than 30% of their income on housing costs, is a major problem in the San Francisco. Affordable housing is quite scarce due to gentrification and rising rents. Housing cost-burden can be augmented for certain types of households, like those with children present. In this analysis, I look at housing cost burden among households with children in San Francisco. As [one of the major cities with the smallest percentage of children](https://www.sfgate.com/mommyfiles/article/Many-families-leave-San-Francisco-but-what-about-10887001.php), I am interested in seeing how housing cost burden varies among the cities neighborhoods - those with more child-family households and those with fewer child-family households. 
+
+**Data Preparation**
+
+* Data: 2018 5-year PUMS estimates
+* Geographic Unit: PUMA
+* Population of Interest: Households with children. 
+  + Households without children were filtered out of the dataset. 
+* Outcomes of Interest: Housing Burden & Total Housing Cost Burden. 
+  + *Housing Burden* - Number and percent of households spending more than 30% of their income on housing costs.
+  + *Total Housing Cost Burden* - the amount of of money that would eliminate housing cost burden in the population
+  + n.b: Income has been adjusted for inflation to reflect 2018 dollars.
+
+
+```{r parameters, echo=T, warning=F, message=F}
+
+# Set Parameters
+census_api_key("99ccb52a629609683f17f804ca875115e3f0804c")
+mb_access_token("sk.eyJ1IjoiZnJhbmNpbmVzdGVwaGVucyIsImEiOiJja2ljb3VrczMwdDdhMnhsNjA4Yjh1c2h1In0.WJjq6TysT6zZZnaxsN0s5g")
+readRenviron("~/.Renviron")
+
+burden_threshold <- 0.3
+
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+
+# Load Variables
+pums_vars_2018 <- 
+  pums_variables %>%
+  filter(year == 2018, survey == "acs5")
+
+```
+
+
+```{r load shapefiles, echo=T, message=F, warning=F}
+# Get shapefiles
+sf_co <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME == "San Francisco")
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+sf_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[sf_co, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+```
+
+```{r load pums dataset, eval=F}
+# Initial Data Loading
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "GRNTP",
+    "SMOCP",
+    "ADJHSG",
+    "HINCP",
+    "ADJINC",
+    "HUPAC",
+    "TEN",
+    "WGTP", 
+    "SPORDER"
+  ),
+  state = "CA",
+  year = 2018,
+  survey = "acs5"
+)
+saveRDS(ca_pums, "ca_pums.rds")
+
+```
+
+```{r Load PUMS data, echo=T, message=F, warning=F}
+ca_pums <- readRDS("ca_pums.rds")
+
+sf_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% sf_pumas$PUMACE10)
+  
+```
+
+```{r Construct burden datasets, echo=T}
+# Households with children burden dataset
+sf_burden_childhh <-
+  sf_pums %>% 
+  filter(HINCP > 0) %>%
+  filter(SPORDER == 1, HUPAC != "4") %>% 
+  transmute(
+    PUMA = PUMA,
+    weight = WGTP,
+    housingcost = ifelse(
+      SMOCP > 0,
+      SMOCP*12*as.numeric(ADJHSG),
+      GRNTP*12*as.numeric(ADJHSG)
+    ),
+    income = HINCP*as.numeric(ADJINC),
+    burden_perc = housingcost/income,
+    burden_30 = housingcost - burden_threshold*income,
+    incomegap_30 = housingcost/burden_threshold - income
+    )
+
+```
+
+```{r burden by pumas, echo=T, message=F, warning=F}
+# Households with children burden by PUMA
+sf_burden_hhchild_pumas <-
+  sf_burden_childhh %>% 
+  mutate(
+    burdened_30 = ifelse(
+      burden_perc >= burden_threshold,
+      weight,
+      0
+    ),
+    excess_30 = ifelse(
+      burden_30 < 0,
+      burden_30,
+      0
+    ),
+    burden_30 = ifelse(
+      burden_30 > 0,
+      burden_30,
+      0
+    ),
+    incomegap_30 = ifelse(
+      incomegap_30 > 0,
+      incomegap_30,
+      0
+    )
+  ) %>% 
+  group_by(PUMA) %>% 
+  summarize(
+    burdened_30 = sum(burdened_30),
+    households = sum(weight),
+    burden_30 = sum(burden_30*weight),
+    incomegap_30 = sum(incomegap_30*weight),
+    excess_30 = sum(excess_30*weight)
+  ) %>% 
+  mutate(
+    burdened_30_perc = burdened_30/households
+  ) %>% 
+  left_join(sf_pumas %>% select(PUMA = PUMACE10, NAME10)) %>% 
+  st_as_sf() %>%
+  st_transform(crs = 4326)
+
+```
+
+```{r cost-burdened statistic}
+# cost-burdened stat. - child hh 
+sum(sf_burden_hhchild_pumas$burdened_30)/sum(sf_burden_hhchild_pumas$households)
+
+```
+
+```{r, housing cost stat}
+# housing cost stat. - child hh
+sum(sf_burden_hhchild_pumas$burden_30)
+
+```
+
+In San Francisco County, about one-third of households with children paid more than 30% of their income, based on PUMS 2014-2018 data.The total amount of that housing cost above the 30% threshold, for all of those households combined, was almost $28.5 billion per year, in 2018 dollars. This would be the dollar value in housing vouchers needed to make the affordable housing crisis disappear in San Francisco.
+
+Table 1 breaks down these key statistics by PUMA or neighborhood in San Francisco. The subsequent maps also highlight how cost burden and total housing cost vary by neighborhood. 
+
+**Table 1: Summary of Key Outcomes by PUMA**
+```{r, table of stats by PUMA}
+
+knitr::kable(sf_burden_hhchild_pumas %>%
+  st_set_geometry(., NULL) %>%
+    select(NAME10, burdened_30, burden_30, burdened_30_perc) %>%
+  mutate(
+    `Cost-burdened Households` = format(burdened_30, big.mark   = ",",),
+    `% Cost-burdened Households` = scales::percent(x = burdened_30_perc,
+                                                   accuracy = 0.01,
+                                                   scale = 100, label = "%"),
+    `Housing Cost` = paste0(format(round(burden_30/1e6, 1), trim = TRUE), "M"),
+    NAME10 = str_remove(NAME10, "San Francisco County " ),
+    NAME10 = gsub("[()]", "", NAME10)) %>%
+   separate("NAME10", into = c("Region","Neighborhood"),
+    sep = "--") %>% 
+  select(-burdened_30, -burden_30, -burdened_30_perc, -Region) %>%
+  relocate("Neighborhood", `Cost-burdened Households`, `% Cost-burdened Households`, `Housing Cost`))
+
+```
+
+
+According to Table 1 and Map 1, South of Market/Potero Hill and Bayview/Hunter's Point had the highest shares of households with children that are cost-burdened. These two areas are along the western side of the county and happen to have the highest shares of children in the county.
+
+Total housing cost was highest in Bayview/Hunter's Point as well as the southern Sunset District. This is shown in Table 1 and Map 2. These are areas that have experienced more gentrification recently (Hwang, forthcoming ASR), so perhaps lack of affordable housing in these neighborhoods is driving their particularly high total costs. South of Market/Potero Hill have one of the lowest total cost values, so perhaps they are neighborhoods with more affordable housing. 
+
+**Map 1: Percent of Cost-Burdened Households with Children**
+```{r map of % Cost burdened hh with children, warning=F, message=F}
+burden_pal1 <- colorNumeric(
+  palette = "Reds",
+  domain = sf_burden_hhchild_pumas$burdened_30_perc
+)
+
+sf_burden_hhchild_pumas %>% 
+  leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    fillColor = ~burden_pal1(burdened_30_perc),
+    fillOpacity = 0.5,
+    color = "white",
+    weight = 0.5,
+    label = ~paste0(round(burdened_30_perc*100), "% of households paying 30%+ of income on housing"),
+    highlightOptions = highlightOptions(
+      weight = 2
+    )
+  ) %>% 
+  addLegend(
+    pal = burden_pal1,
+    values = ~burdened_30_perc,
+    title = "Proportion Cost-burdened<br>households"
+  )
+
+```
+
+
+**Map 2: Total Housing Cost Burden**
+```{r tot. housing cost burden}
+
+burden_pal2 <- colorNumeric(
+  palette = "Oranges",
+  domain = sf_burden_hhchild_pumas$burden_30/1e6
+)
+
+sf_burden_hhchild_pumas %>% 
+  leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    fillColor = ~burden_pal2(burden_30/1e6),
+    fillOpacity = 0.5,
+    color = "white",
+    weight = 0.5,
+    label = ~paste0("$", round(burden_30/1e6), "M total annual cost burden"),
+    highlightOptions = highlightOptions(
+      weight = 2
+    )
+  ) %>% 
+  addLegend(
+    pal = burden_pal2,
+    values = ~burden_30/1e6,
+    title = "Total housing cost<br>burden, in $ millions"
+  )
+
+```
+
+
+---
+
+## Opportunity to Build More Affordable Housing in Bayview
+
+In light of the high degree of cost-burden and total housing cost in Bayview/Hunter's Point, the next set of analyses attempt to uncover opportunities to build more affordable housing the the Bayview neighborhood. This neighborhood presents particular challenges because of the environmental hazards and blight created from historical industrial activity. That being said, the [SF planning board](https://generalplan.sfplanning.org/Bayview_Hunters_Point.htm) has outlined some opportunities for rezoning areas of the neighborhood for more multi-story developments. I zoom in on one such area, which is demarcated in the [city planning map for Bayview](https://generalplan.sfplanning.org/images/bayview/Bayview_Map_7.pdf) in this analysis to calculate how many unused area and additional units could be created. 
+
+
+**Data & Preparation**
+
+*Data Sources*
+
+* Parcel data and structure height data come from San Francisco's Open data website.
+* Property tax data from the tax assessor's webpage.
+  + The property attributes, e.g., floors, area in sqft., zoning info. from property tax data is joined to parcel data on block-lot ID.  
+
+```{r, original loading of property tax data, eval=F, message=F, warning=F}
+
+temp <- tempfile()
+download.file("https://sfassessor.org/sites/default/files/uploaded/2020.7.10_SF_ASR_Secured_Roll_Data_2019-2020.xlsx",destfile = temp, mode = "wb")
+
+sf_secured <- read_excel(temp, sheet = "Roll Data 2019-2020")
+datakey <- read_excel(temp, sheet = "Data Key")
+usecode <- read_excel(temp, sheet = "Class Code Only")
+
+unlink(temp)
+saveRDS(sf_secured, "sf_secured.rds")
+saveRDS(datakey, "datakey.rds")
+saveRDS(usecode, "usecode.rds")
+
+```
+
+```{r import parcels, echo=F, message=F, warning=F, include=F}
+
+### Load data
+sf_parcels_shape <- 
+  st_read("https://data.sfgov.org/api/geospatial/acdm-wktn?method=export&format=GeoJSON") %>%
+  filter(active == "true") %>% 
+  select(
+    apn = blklot,
+    zoning = zoning_code,
+    zoning_desc = zoning_district
+  )
+
+# Building height data for parcels 
+  ## check to see if height greater than 40ft in parcels
+sf_heights <- st_read("https://data.sfgov.org/resource/h9wh-cg3m.geojson")
+
+```
+
+```{r import prop taxes, echo=T, message=F, warning=F}
+# Property tax data (saved from previous work)
+  # download site: "https://sfassessor.org/sites/default/files/uploaded/2020.7.10_SF_ASR_Secured_Roll_Data_2019-2020.xlsx
+sf_secured <- readRDS("sf_secured.rds")
+datakey <- readRDS("datakey.rds")
+usecode <- readRDS("usecode.rds")
+
+
+# Link parcels and property data on block lot id
+sf_parcels <-
+  sf_parcels_shape %>% 
+  left_join(
+    sf_secured %>% 
+      mutate(
+        apn = RP1PRCLID %>% 
+          str_replace(" ","")
+      )
+  )
+
+# Set projection parameter
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+
+
+```
+
+*Data Preparation*
+
+The parcel data is reduced to a block group in the Bayview neighborhood that was identified as a target for more multi-story housing. This block group is along Third Street between Thornton and Revere Avenues. Map 3 shows the parcels in the block group that are in the targeted area. 
+
+```{r prep sample, echo=T, message=F, warning=F}
+# Filter parcels to block group 060750230032
+bayview_sample <-
+  block_groups(state = "CA",
+               county = "San Francisco",
+               cb = T,
+               progress_bar = F) %>%
+  filter(GEOID == "060750230032") %>% 
+  st_transform(4326)
+
+bayview_parcels <- 
+  sf_parcels %>% 
+  st_centroid() %>% 
+  .[bayview_sample, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(sf_parcels %>% select(apn)) %>% 
+  st_as_sf() %>% 
+  filter(!is.na(RP1PRCLID))
+
+```
+
+**Zoning codes in the block group**
+```{r, table of zones, echo=F, message=F, warning=F}
+table(bayview_parcels$zoning)
+
+```
+
+**Map 3: Targeted area for more affordable housing**
+```{r map sample parcels}
+# Map sample parcels
+bayview_parcels %>% 
+  leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    fillColor = "blue",
+    color = "black",
+    weight = 0.5,
+    label = ~zoning
+  )
+
+```
+
+
+There are 11 condominium parcels that we need to clean-up in the shapefile to deduplicate features.
+
+
+```{r condo parcels, echo=T, message=F, warning=F}
+# Identify duplicate parcel features with condos
+duplicate_shapes <- 
+  bayview_parcels %>% 
+  as.data.frame() %>% 
+  filter(duplicated(geometry))
+
+condo_parcels <- 
+  bayview_parcels %>% 
+  filter(geometry %in% duplicate_shapes$geometry)
+```
+
+
+**Table 2: Summary of zones in Bayview targeted parcels**
+```{r Summarize the zoning, message=F, warning=F}
+# summary of zones
+knitr::kable(bayview_parcels %>%
+  st_set_geometry(NULL) %>%
+  group_by(zoning, zoning_desc) %>% 
+  summarise(Freq = n()) %>%
+  rename(Zoning = "zoning",
+         Description = "zoning_desc")
+  ) 
+
+```
+
+
+As Table 2 shows, the majority of parcels in this block group are zoned as residential, either 1 or two family houses. According  to Table 3, many of these residential parcels are small scale dwellings with either four units or fewer or five to 14 units. 
+
+
+**Table 3: Propery Classes of Parcels**
+```{r view counts of property classes, message=F, warning=F}
+# Property class codes
+rmarkdown::paged_table(table(bayview_parcels$RP1CLACDE) %>% 
+  as.data.frame() %>% 
+  left_join(usecode, by = c("Var1"= "CODE")) %>% 
+  select(Freq, DESCRIPTION))
+
+```
+
+
+```{r clean parcel data for condo issue, echo=T, message=F, warning=F}
+# Clean up duplicates and create housing opportunity measures
+bayview_parcels_clean <-
+  bayview_parcels %>% 
+  filter(zoning != "P") %>% 
+  as.data.frame() %>% 
+  mutate(geometry = geometry %>% st_as_text()) %>% 
+  group_by(geometry) %>% 
+  summarize(
+    apn = first(apn),
+    zoning = first(zoning),
+    units = sum(UNITS, na.rm = T),
+    stories = max(STOREYNO, na.rm = T),
+    floorarea = sum(SQFT, na.rm = T)
+  ) %>% 
+  ungroup() %>%
+  select(-geometry) %>% 
+  left_join(bayview_parcels %>% select(apn)) %>% 
+  st_as_sf()
+
+
+```
+
+
+Table 4 of the summary statistics provides further evidence of few units and floors in this set of parcels. At most, there are nine units in a parcel in this area and the average is around 1. Further, four floors is the highest structure in this set of parcels. The square footage of floor area ranges from 0 to 9,320, with the average falling at 1,507 square feet.  
+
+
+**Table 4: Summary Statistics of Building Properties**
+```{r summ stats of unused space}
+summary(bayview_parcels_clean[,3:6] %>%
+          st_set_geometry(NULL) %>%
+          rename(`floor area (sq ft)` = "floorarea"))
+
+```
+
+
+*Measures*
+
+Measures were calculated according to the guidance set out in the zoning codes by the city. Those measures are refenced below in each description.
+
+**Unused Area**
+Lot area in square feet was calculated for each parcel. Then, maximum floor area is constructed for each zoning type based on the Floor Area Ratio (FAR) descriptions listed in the city's [code library](https://codelibrary.amlegal.com/codes/san_francisco/latest/sf_planning/0-0-0-25522). For residential units, the lot area was scaled by a factor of 1.8. For the moderately dense commercial units, the area was scaled by a factor of 3.6. Finally, unused area was calculated by subtracting the floor area from the maximum floor area.
+
+**Unused Units**
+The maximum number of units was also listed on the codes website. For residential units, the number in the zoning codeRH-1, RH-2, or RH-3 is the maximum number of units. For commercial-medium desnity, the code stated: the max dwelling units is "1 unit per 800 square foot lot area, or whatever is permitted in the nearest residential district". For ease of calculation, I will assume 1 unit per 800 square feet. this is likely a conservative estimate if the nearby residential district allows for greater density. 
+
+**Building Height**
+According to the height and bulk map, there are no special height districts in this block group, so all [heights are 40 ft](https://export.amlegal.com/media/4b864cbb7b739fb3fc2fec868eecc0743c91e7c6/DATAOBJECTS/0-0-0-1824.pdf).
+
+
+``` {r produce unused space measures, echo=T, message=F, warning=F}
+# Produce unused space measures
+bayview_parcels_zoning <-
+  bayview_parcels_clean %>% 
+  st_centroid() %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(bayview_parcels_clean %>% select(apn)) %>% 
+  st_as_sf() %>% 
+  st_transform(projection) %>% 
+  mutate(
+    lotarea = st_area(.) %>% as.numeric(),
+    max_floorarea = case_when(
+      zoning %in% c("RH-1","RH-2") ~ lotarea*1.8,
+      zoning == "NC-3" ~ lotarea*3.6
+    ),
+    unused_floorarea = ifelse(
+      (max_floorarea - floorarea) > 0,
+      (max_floorarea - floorarea),
+      0
+    ),
+    max_units = case_when(
+      zoning == "RH-1" ~ 1,
+      zoning == "RH-2" ~ 2,
+      zoning == "NC-3" ~ pmax(3, floor(lotarea/800))
+    ),
+    unused_units = ifelse(
+      (max_units - units) > 0,
+      (max_units - units),
+      0
+    ),
+    max_height = 40,
+    max_stories = floor(max_height/11),
+    unused_stories = ifelse(
+      (max_stories - stories) > 0,
+      (max_stories - stories),
+      0
+    )
+  ) %>% 
+  st_transform(4326)
+
+```
+
+```{r stat: how much floor area unused, echo=T}
+sum(bayview_parcels_zoning$unused_floorarea, na.rm = T)
+
+```
+
+About 1.2 million square feet of floor area could be built in this set of blocks in the Bayview neighborhood under current zoning.
+
+
+```{r stat: amount of dwellings could be built, echo=T}
+sum(bayview_parcels_zoning$unused_units, na.rm = T)
+
+```
+
+Assuming zoning ordinances are not changed, if all of that underutilized space were to be used for housing, there could be about 172 more dwelling units constructed in this set of blocks in the Bayview. 
+
+The following maps display where the underutilized space and additional units could be constructed within this set of blocks in Bayview. 
+
+
+**Map 4: Underutilized Space**
+```{r map of underutilized space}
+# Unused floor area mapped
+floorarea_pal <- colorBin(
+  palette = "Greens",
+  bins = c(0,1000,5000,10000,max(bayview_parcels_zoning$unused_floorarea, na.rm = T))
+)
+
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    data = bayview_parcels_zoning,
+    fillColor = ~floorarea_pal(unused_floorarea),
+    fillOpacity = 0.75,
+    color = "white",
+    weight = 0.5,
+    label = ~round(unused_floorarea)
+  ) %>% 
+  addLegend(
+    data = bayview_parcels_zoning,
+    pal = floorarea_pal,
+    values = ~unused_floorarea,
+    title = "Unused Floor Area"
+  )
+
+```
+
+**Map 5: Additional units Allowed**
+```{r map additional units allowed}
+# Mapped additional units allowed
+units_pal <- colorBin(
+  palette = "Purples",
+  bins = c(0,1,5,10,max(bayview_parcels_zoning$unused_units, na.rm = T))
+)
+
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "light-v9",
+    username = "mapbox"
+  ) %>% 
+  addPolygons(
+    data = bayview_parcels_zoning,
+    fillColor = ~units_pal(unused_units),
+    fillOpacity = 0.75,
+    color = "white",
+    weight = 0.5,
+    label = ~round(unused_units)
+  ) %>% 
+  addLegend(
+    data = bayview_parcels_zoning,
+    pal = units_pal,
+    values = ~unused_units,
+    title = "Additional Units<br>Allowed"
+  )
+
+```
+
+
+There appears to be some spatial patterning of underutilized space in Map 4. The parcels with the most unused area are along 3rd street, particularly where 3rd and Thornton Avenue intersect. The furthest West parcel between Thornton and Williams Avenue also stands out as an outlying area with a lot of unused space available. 
+
+Map 5 of additional units allowed does not show a clear pattern of clustering. The parcels with additional units allowed are distributed across this set of blocks. The block to the north of Williams Avenue between 3rd Street and Lucy street has many parcels that could add a unit or two if developed, but the parcel with the most potential for additional units is the one just to the North of Thornton Ave off of 3rd Street. 
+
+
+**Concluding Discussion**
+
+As mentioned in the introduction, adding more housing within Bayview is tricky not only due to the constraints of current zoning law, but also because the neighborhood's environmental makeup. In this small sample of blocks, 1.2 million square feet of floor area, which results in about 172 dwelling units could be constructed barring no changes in the current zoning code. It is interesting that the SF Planning Department scoped out this small set of set of blocks as being the main priority for more housing development because the estimates calculated by this analysis seems limited. 
+
+Building on this analysis would be important for determining whether other blocks/parcels in Bayview would offer more or less opportunity for developing affordable housing. I also think an analysis that factors in proximity to environmental hazards and key services like public transportation and jobs is key for a neighborhood like Bayview that his been underserved and not supported by planning developments relative to other parts of the city.  
