@@ -58,8 +58,6 @@ readRenviron("~/.Renviron")
 
 burden_threshold <- 0.3
 
-projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
-
 # Load Variables
 pums_vars_2018 <- 
   pums_variables %>%
@@ -168,7 +166,7 @@ sf_burden_hhchild_pumas <-
     )
   ) %>% 
   group_by(PUMA) %>% 
-  summarize(
+  summarise(
     burdened_30 = sum(burdened_30),
     households = sum(weight),
     burden_30 = sum(burden_30*weight),
@@ -233,7 +231,7 @@ burden_pal1 <- colorNumeric(
   domain = sf_burden_hhchild_pumas$burdened_30_perc
 )
 
-sf_burden_hhchild_pumas %>% 
+sf_burden_pumas_plot <- sf_burden_hhchild_pumas %>% 
   leaflet() %>% 
   addMapboxTiles(
     style_id = "streets-v11",
@@ -255,6 +253,8 @@ sf_burden_hhchild_pumas %>%
     title = "Proportion Cost-burdened<br>households"
   )
 
+saveRDS(sf_burden_pumas_plot, "sf_burden_pumas_plot.rds")
+
 ```
 
 
@@ -266,7 +266,7 @@ burden_pal2 <- colorNumeric(
   domain = sf_burden_hhchild_pumas$burden_30/1e6
 )
 
-sf_burden_hhchild_pumas %>% 
+sf_burden_cost_plot <- sf_burden_hhchild_pumas %>% 
   leaflet() %>% 
   addMapboxTiles(
     style_id = "streets-v11",
@@ -287,6 +287,8 @@ sf_burden_hhchild_pumas %>%
     values = ~burden_30/1e6,
     title = "Total housing cost<br>burden, in $ millions"
   )
+
+saveRDS(sf_burden_cost_plot, "sf_burden_cost_plot.rds")
 
 ```
 
@@ -577,7 +579,7 @@ floorarea_pal <- colorBin(
   bins = c(0,1000,5000,10000,max(bayview_parcels_zoning$unused_floorarea, na.rm = T))
 )
 
-leaflet() %>% 
+unused_floors_plot <- leaflet() %>% 
   addMapboxTiles(
     style_id = "light-v9",
     username = "mapbox"
@@ -597,6 +599,8 @@ leaflet() %>%
     title = "Unused Floor Area"
   )
 
+saveRDS(unused_floors_plot, "unused_floors_plot.rds")
+
 ```
 
 **Map 5: Additional units Allowed**
@@ -607,7 +611,7 @@ units_pal <- colorBin(
   bins = c(0,1,5,10,max(bayview_parcels_zoning$unused_units, na.rm = T))
 )
 
-leaflet() %>% 
+add_units_allowed_plot <- leaflet() %>% 
   addMapboxTiles(
     style_id = "light-v9",
     username = "mapbox"
@@ -626,6 +630,8 @@ leaflet() %>%
     values = ~unused_units,
     title = "Additional Units<br>Allowed"
   )
+
+saveRDS(add_units_allowed_plot, "add_units_allowed_plot.rds")
 
 ```
 
