@@ -2,14 +2,17 @@
 title: "Land Use in San Francisco"
 author: "Francine Stephens"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
-output: 
+output:
   html_document:
     toc: true
-    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+    theme: simplex
+    highlight: tango
 ---
 
 ```{r setup, include=F, message=F, warning=F}
-knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(echo=TRUE)
 
 setwd("~/Stanford/landuse_SF")
 
@@ -49,7 +52,7 @@ Housing cost-burden, where a household spends more than 30% of their income on h
   + n.b: Income has been adjusted for inflation to reflect 2018 dollars.
 
 
-```{r parameters, echo=T, warning=F, message=F}
+```{r parameters, warning=F, message=F}
 
 # Set Parameters
 census_api_key("99ccb52a629609683f17f804ca875115e3f0804c")
@@ -63,10 +66,6 @@ pums_vars_2018 <-
   pums_variables %>%
   filter(year == 2018, survey == "acs5")
 
-```
-
-
-```{r load shapefiles, echo=T, message=F, warning=F}
 # Get shapefiles
 sf_co <-
   counties("CA", cb = T, progress_bar = F) %>%
@@ -114,10 +113,7 @@ ca_pums <- readRDS("ca_pums.rds")
 sf_pums <-
   ca_pums %>% 
   filter(PUMA %in% sf_pumas$PUMACE10)
-  
-```
 
-```{r Construct burden datasets, echo=T}
 # Households with children burden dataset
 sf_burden_childhh <-
   sf_pums %>% 
@@ -137,9 +133,6 @@ sf_burden_childhh <-
     incomegap_30 = housingcost/burden_threshold - income
     )
 
-```
-
-```{r burden by pumas, echo=T, message=F, warning=F}
 # Households with children burden by PUMA
 sf_burden_hhchild_pumas <-
   sf_burden_childhh %>% 
@@ -182,12 +175,14 @@ sf_burden_hhchild_pumas <-
 
 ```
 
+**Cost-Burdened Statistic**
 ```{r cost-burdened statistic, echo=T, warning=F,message=F}
 # cost-burdened stat 
 sum(sf_burden_hhchild_pumas$burdened_30)/sum(sf_burden_hhchild_pumas$households)
 
 ```
 
+**Housing Cost Statistic**
 ```{r, housing cost stat, echo=T, warning=F, message=F}
 # housing cost stat. - child hh
 sum(sf_burden_hhchild_pumas$burden_30)
@@ -253,13 +248,17 @@ sf_burden_pumas_plot <- sf_burden_hhchild_pumas %>%
     title = "Proportion Cost-burdened<br>households"
   )
 
-saveRDS(sf_burden_pumas_plot, "sf_burden_pumas_plot.rds")
+sf_burden_pumas_plot
 
+```
+
+```{r output puma plot, warning=FALSE, message=FALSE}
+saveRDS(sf_burden_pumas_plot, "sf_burden_pumas_plot.rds")
 ```
 
 
 **Map 2: Total Housing Cost Burden**
-```{r tot. housing cost burden}
+```{r tot housing cost burden, message=FALSE, warning=FALSE}
 
 burden_pal2 <- colorNumeric(
   palette = "Oranges",
@@ -288,10 +287,13 @@ sf_burden_cost_plot <- sf_burden_hhchild_pumas %>%
     title = "Total housing cost<br>burden, in $ millions"
   )
 
-saveRDS(sf_burden_cost_plot, "sf_burden_cost_plot.rds")
+sf_burden_cost_plot
 
 ```
 
+```{r plot cost burden, message=FALSE, warning=FALSE}
+saveRDS(sf_burden_cost_plot, "sf_burden_cost_plot.rds")
+```
 
 ---
 
@@ -324,7 +326,7 @@ saveRDS(usecode, "usecode.rds")
 
 ```
 
-```{r import parcels, echo=F, message=F, warning=F, include=F}
+```{r import parcels, echo=F, message=F, warning=F}
 
 ### Load data
 sf_parcels_shape <- 
@@ -340,9 +342,7 @@ sf_parcels_shape <-
   ## check to see if height greater than 40ft in parcels
 sf_heights <- st_read("https://data.sfgov.org/resource/h9wh-cg3m.geojson")
 
-```
 
-```{r import prop taxes, echo=T, message=F, warning=F}
 # Property tax data (saved from previous work)
   # download site: "https://sfassessor.org/sites/default/files/uploaded/2020.7.10_SF_ASR_Secured_Roll_Data_2019-2020.xlsx
 sf_secured <- readRDS("sf_secured.rds")
@@ -553,6 +553,7 @@ bayview_parcels_zoning <-
 
 ```
 
+**Unused Floor Area**
 ```{r stat: how much floor area unused, echo=T}
 sum(bayview_parcels_zoning$unused_floorarea, na.rm = T)
 
@@ -561,6 +562,7 @@ sum(bayview_parcels_zoning$unused_floorarea, na.rm = T)
 About 1.2 million square feet of floor area could be built in this set of blocks in the Bayview neighborhood under current zoning.
 
 
+**Potential for Additional Dwellings**
 ```{r stat: amount of dwellings could be built, echo=T}
 sum(bayview_parcels_zoning$unused_units, na.rm = T)
 
@@ -599,9 +601,14 @@ unused_floors_plot <- leaflet() %>%
     title = "Unused Floor Area"
   )
 
-saveRDS(unused_floors_plot, "unused_floors_plot.rds")
+unused_floors_plot
 
 ```
+
+```{r save plot, message=FALSE, warning=FALSE}
+saveRDS(unused_floors_plot, "unused_floors_plot.rds")
+```
+
 
 **Map 5: Additional units Allowed**
 ```{r map additional units allowed}
@@ -631,10 +638,14 @@ add_units_allowed_plot <- leaflet() %>%
     title = "Additional Units<br>Allowed"
   )
 
-saveRDS(add_units_allowed_plot, "add_units_allowed_plot.rds")
+add_units_allowed_plot
 
 ```
 
+
+```{r save plot 5, message=FALSE, warning=FALSE}
+saveRDS(add_units_allowed_plot, "add_units_allowed_plot.rds")
+```
 
 There appears to be some spatial patterning of underutilized space in Map 4. The parcels with the most unused area are along 3rd street, particularly where 3rd and Thornton Avenue intersect. The furthest West parcel between Thornton and Williams Avenue also stands out as an outlying area with a lot of unused space available. 
 
